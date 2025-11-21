@@ -200,7 +200,7 @@ void handleFileDownload() {
 // --- Web handlers for configuration using JSON ---
 // Sends the entire configuration struct as a JSON object.
 void handleGetConfig() {
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     // Add each setting from the config struct to the JSON document
     doc["pressure"] = String(config.seaLevelPressureHPA, 2);
 
@@ -211,7 +211,7 @@ void handleGetConfig() {
 
 // Receives a JSON object to update settings.
 void handleUpdateConfig() {
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     DeserializationError error = deserializeJson(doc, server.arg("plain"));
 
     if (error) {
@@ -222,7 +222,7 @@ void handleUpdateConfig() {
     bool configChanged = false;
 
     // Check for each setting in the received JSON
-    if (doc.containsKey("pressure")) {
+    if (doc["pressure"].is<float>()) {
         float newPressure = doc["pressure"];
         if (newPressure >= 800.0 && newPressure <= 1200.0) {
             config.seaLevelPressureHPA = newPressure;
