@@ -57,7 +57,7 @@ int pin_sdioD3 = 33;
 
 // --- Global State Variables ---
 volatile bool loggingEnabled = true;
-const int buttonPin = 15;
+constexpr int buttonPin = 15;
 
 // --- NEW: Configuration Struct ---
 // Holds all system settings. Add new settings here.
@@ -267,10 +267,10 @@ void setup() {
 
     // --- Initialise SD Card in SDIO mode ---
     if (!SD_MMC.setPins(pin_sdioCLK, pin_sdioCMD, pin_sdioD0, pin_sdioD1, pin_sdioD2, pin_sdioD3)) {
-        Serial.println("SDIO pin assignment failed!"); while(1);
+        Serial.println("SDIO pin assignment failed!"); while(true);
     }
     if (!SD_MMC.begin()) {
-        Serial.println("Card Mount Failed"); while(1);
+        Serial.println("Card Mount Failed"); while(true);
     }
     Serial.println("SD Card Initialised.");
 
@@ -315,17 +315,17 @@ void setup() {
                          "GPS_Lat,GPS_Lon,GPS_Alt(m),GPS_Speed(m/s),GPS_Heading(deg)");
         dataFile.flush(); // Ensure the header is written to the card immediately
     } else {
-        Serial.println("Error creating log file!"); while(1);
+        Serial.println("Error creating log file!"); while(true);
     }
 
     // --- Initialise sensors ---
     Wire.begin(); // Starts I2C
     SPI.begin(); // Starts SPI
-    if (!bmp.begin_SPI(BMP_CS)) { Serial.println("BMP390 Init Failed"); while (1); }
+    if (!bmp.begin_SPI(BMP_CS)) { Serial.println("BMP390 Init Failed"); while (true); }
     icm.begin(ICM_CS, SPI);
-    if (icm.status != ICM_20948_Stat_Ok) { Serial.println("ICM20948 Init Failed"); while (1); }
-    if (!bno08x.begin_SPI(BNO08X_CS, BNO08X_INT)) { Serial.println("BNO085 Init Failed"); while (1); }
-    if (!myGNSS.begin()) { Serial.println(F("u-blox GNSS Init Failed")); while (1); }
+    if (icm.status != ICM_20948_Stat_Ok) { Serial.println("ICM20948 Init Failed"); while (true); }
+    if (!bno08x.begin_SPI(BNO08X_CS, BNO08X_INT)) { Serial.println("BNO085 Init Failed"); while (true); }
+    if (!myGNSS.begin()) { Serial.println(F("u-blox GNSS Init Failed")); while (true); }
 
     // Sensor settings
     bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_8X);
@@ -344,7 +344,7 @@ void setup() {
     Serial.println("\nConfiguring Access Point...");
     if (!WiFi.softAP(ssid, password)) {
         Serial.println("Failed to start AP. Please reboot the device.");
-        while (1) { delay(1000); }
+        while (true) { delay(1000); }
     }
     IPAddress myIP = WiFi.softAPIP();
     Serial.print("AP IP address: ");
@@ -365,11 +365,11 @@ void setup() {
 
     // Create the concurrent tasks.
     // xTaskCreatePinnedToCore(function, name, stack size, params, priority, handle, core)
-    xTaskCreatePinnedToCore(highFrequencySensorTask, "HighFreqTask", 4096, NULL, 3, NULL, 1); // Highest priority
-    xTaskCreatePinnedToCore(gpsTask,                 "GPSTask",       4096, NULL, 1, NULL, 1); // Lowest priority
-    xTaskCreatePinnedToCore(loggingTask,             "LoggingTask",   4096, NULL, 2, NULL, 0); // Medium priority, on core 0
-    xTaskCreatePinnedToCore(buttonTask,              "ButtonTask",    2048, NULL, 2, NULL, 0); // Medium priority, on core 0
-    xTaskCreatePinnedToCore(webServerTask,           "WebServerTask", 4096, NULL, 1, NULL, 0); // Low priority, on core 0
+    xTaskCreatePinnedToCore(highFrequencySensorTask, "HighFreqTask", 4096, nullptr, 3, nullptr, 1); // Highest priority
+    xTaskCreatePinnedToCore(gpsTask,                 "GPSTask",       4096, nullptr, 1, nullptr, 1); // Lowest priority
+    xTaskCreatePinnedToCore(loggingTask,             "LoggingTask",   4096, nullptr, 2, nullptr, 0); // Medium priority, on core 0
+    xTaskCreatePinnedToCore(buttonTask,              "ButtonTask",    2048, nullptr, 2, nullptr, 0); // Medium priority, on core 0
+    xTaskCreatePinnedToCore(webServerTask,           "WebServerTask", 4096, nullptr, 1, nullptr, 0); // Low priority, on core 0
 }
 
 // --- TASK 1: High-Frequency Sensor Polling ---
@@ -390,7 +390,7 @@ void highFrequencySensorTask(void *pvParameters) {
 
             // Read ICM20948
             icm.getAGMT();
-            const float G_MPS2 = 9.80665;
+            constexpr float G_MPS2 = 9.80665;
             sensorData.icm_accX = (icm.accX() / 1000.0) * G_MPS2;
             sensorData.icm_accY = (icm.accY() / 1000.0) * G_MPS2;
             sensorData.icm_accZ = (icm.accZ() / 1000.0) * G_MPS2;
@@ -420,6 +420,7 @@ void highFrequencySensorTask(void *pvParameters) {
                         sensorData.bno_quatJ = bno_sensorValue.un.geoMagRotationVector.j;
                         sensorData.bno_quatK = bno_sensorValue.un.geoMagRotationVector.k;
                         break;
+                    default: ;
                 }
             }
             // Release the mutex lock
@@ -461,10 +462,10 @@ void gpsTask(void *pvParameters) {
 // Purpose: Writes current sensor data to SD card.
 void loggingTask(void *pvParameters) {
     unsigned long lastFlush = 0;
-    const unsigned long flushInterval = 1000; // Flush data to SD card every second
 
     for (;;) { // Infinite loop
         if (loggingEnabled) {
+            constexpr unsigned long flushInterval = 1000;
             AllSensorData localData; // Create a local copy of sensor data
 
             // Locks the mutex and makes a copy of the data, then immediately unlocks
@@ -522,9 +523,10 @@ void buttonTask(void *pvParameters) {
     int debouncedState = LOW;  // The stable state of button
     int lastReading = LOW;     // The last reading from the pin
     unsigned long lastDebounceTime = 0;
-    const unsigned long debounceDelay = 50; // 50ms debounce delay
 
-    for (;;) { // Infinite loop
+    for (;;) {
+        constexpr unsigned long debounceDelay = 50;
+        // Infinite loop
         int currentReading = digitalRead(buttonPin);
 
         // If the switch changes state, reset the debounce timer.
