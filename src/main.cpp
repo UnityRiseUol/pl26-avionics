@@ -39,8 +39,8 @@
 #define BAND 868E6
 
 // --- WiFi & Web Server ---
-const char* ssid = "LIFTSv2";
-const char* password = "123456789";
+auto ssid = "LIFTSv2";
+auto password = "123456789";
 WebServer server(80);
 
 // --- Sensor Objects ---
@@ -188,7 +188,7 @@ void handleGetCsvList() {
 
 void handleFileDownload() {
   if (server.hasArg("file")) {
-    String fileName = server.arg("file");
+    const String fileName = server.arg("file");
     if (fileName.indexOf('/') != -1 || fileName.indexOf("..") != -1) {
       server.send(400, "text/plain", "Invalid filename.");
       return;
@@ -217,7 +217,7 @@ void handleGetConfig() {
 
 void handleUpdateConfig() {
     JsonDocument doc;
-    DeserializationError error = deserializeJson(doc, server.arg("plain"));
+    const DeserializationError error = deserializeJson(doc, server.arg("plain"));
     if (error) {
         server.send(400, "text/plain", "Invalid JSON.");
         return;
@@ -358,11 +358,11 @@ void highFrequencySensorTask(void *pvParameters) {
                     sensorData.bmp_pressure = bmp.pressure / 100.0;
                     sensorData.bmp_altitude = bmp.readAltitude(config.seaLevelPressureHPA);
 
-                    unsigned long current_time = millis();
+                    const unsigned long current_time = millis();
                     if (last_vs_time > 0) {
-                        float dt = (current_time - last_vs_time) / 1000.0f;
+                        const float dt = (current_time - last_vs_time) / 1000.0f;
                         if (dt > 0) {
-                            float raw_vs = (sensorData.bmp_altitude - last_altitude) / dt;
+                            const float raw_vs = (sensorData.bmp_altitude - last_altitude) / dt;
                             altitude_samples[sample_index] = raw_vs;
                             sample_index = (sample_index + 1) % VERTICAL_SPEED_SAMPLES;
                             float total_vs = 0;
@@ -425,8 +425,8 @@ void gpsTask(void *pvParameters) {
     for (;;) {
         if (myGNSS.getPVT()) {
             if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
-                long rawLat = myGNSS.getLatitude();
-                long rawLon = myGNSS.getLongitude();
+                const long rawLat = myGNSS.getLatitude();
+                const long rawLon = myGNSS.getLongitude();
                 if (rawLat != 0 || rawLon != 0) {
                     sensorData.gps_latitude = rawLat / 10000000.0f;
                     sensorData.gps_longitude = rawLon / 10000000.0f;
@@ -497,17 +497,18 @@ void buttonTask(void *pvParameters) {
     int lastState = LOW;
     unsigned long lastDebounce = 0;
     for (;;) {
-        int reading = digitalRead(buttonPin);
+        const int reading = digitalRead(buttonPin);
         if (reading != lastState) lastDebounce = millis();
 
         if ((millis() - lastDebounce) > 50) {
             if (reading == HIGH) {
                 loggingEnabled = !loggingEnabled;
                 if (loggingEnabled) {
-                    dataFile = SD_MMC.open(logFileName, FILE_APPEND);
                     Serial.println("Log Resumed");
                 } else {
-                    if(dataFile) { dataFile.flush(); dataFile.close(); }
+                    if(dataFile) {
+                        dataFile.flush();
+                    }
                     Serial.println("Log Stopped");
                 }
                 // Wait for release
@@ -549,14 +550,11 @@ void loraTask(void *pvParameters) {
         if (xSemaphoreTake(xSpiMutex, portMAX_DELAY) == pdTRUE) {
             LoRa.beginPacket();
             LoRa.write(reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
-            LoRa.endPacket(true); // Async send
+            LoRa.endPacket(true);
             xSemaphoreGive(xSpiMutex);
         }
 
         // 3. Timing Control for 50Hz
-        // 32 bytes at 500kHz SF7 takes ~11ms.
-        // We delay 20ms. Total cycle ~20ms + processing time.
-        // Approx 45-50 packets per second.
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
