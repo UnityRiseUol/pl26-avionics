@@ -11,6 +11,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
+#include <LoRa.h>
 #include <Adafruit_Sensor.h>
 #include "Adafruit_BMP3XX.h"
 #include "ICM_20948.h"
@@ -31,6 +32,15 @@
 #define BNO08X_INT 17
 #define BNO08X_RESET 1
 
+// LoRa Definitions
+#define RFM95_CS    7
+#define RFM95_RST   5
+#define RFM95_INT   6
+#define LORA_SCK_PIN 12
+#define LORA_MISO_PIN 13
+#define LORA_MOSI_PIN 11
+#define BAND 868E6
+
 // --- WiFi & Web Server ---
 const char* ssid = "LIFTSv2";
 const char* password = "123456789";
@@ -42,6 +52,7 @@ ICM_20948_SPI icm;
 Adafruit_BNO08x bno08x(BNO08X_RESET);
 sh2_SensorValue_t bno_sensorValue;
 SFE_UBLOX_GNSS myGNSS;
+SPIClass loraSPI(HSPI); // New SPI bus for LoRa module
 
 // --- SD Card and File Handling ---
 char logFileName[35]; // Stores the generated log file name
@@ -93,6 +104,7 @@ void gpsTask(void *pvParameters);
 void loggingTask(void *pvParameters);
 void buttonTask(void *pvParameters);
 void webServerTask(void *pvParameters);
+void loraTask(void *pvParameters);
 
 // --- Configuration Functions ---
 // Saves the current configuration from the config struct to the SD card.
@@ -370,6 +382,7 @@ void setup() {
     xTaskCreatePinnedToCore(loggingTask,             "LoggingTask",   4096, nullptr, 2, nullptr, 0); // Medium priority, on core 0
     xTaskCreatePinnedToCore(buttonTask,              "ButtonTask",    2048, nullptr, 2, nullptr, 0); // Medium priority, on core 0
     xTaskCreatePinnedToCore(webServerTask,           "WebServerTask", 4096, nullptr, 1, nullptr, 0); // Low priority, on core 0
+    xTaskCreatePinnedToCore(loraTask,                "LoRaTask",      4096, nullptr, 1, nullptr, 0); // Low priority, on core 0
 }
 
 // --- TASK 1: High-Frequency Sensor Polling ---
@@ -573,6 +586,41 @@ void webServerTask(void *pvParameters) {
   for (;;) {
     server.handleClient();
     vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
+// --- TASK 6: LoRa Transmitter ---
+// Priority: 1 (Low).
+// Purpose: Broadcasts a message every second via LoRa.
+void loraTask(void *pvParameters) {
+  Serial.println("ESP32-S3 LoRa Transmitter Task Started");
+
+  // Initialize SPI for LoRa on separate pins
+  loraSPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
+  LoRa.setSPI(loraSPI);
+  LoRa.setPins(RFM95_CS, RFM95_RST, RFM95_INT);
+
+  if (!LoRa.begin(BAND)) {
+    Serial.println("Starting LoRa failed!");
+    vTaskDelete(nullptr); // End this task if LoRa fails
+  }
+
+  LoRa.setTxPower(20);
+  Serial.println("LoRa Initialized at 868MHz High Power!");
+
+  int counter = 0;
+
+  for (;;) { // Infinite loop
+    Serial.print("Sending packet: ");
+    Serial.println(counter);
+
+    LoRa.beginPacket();
+    LoRa.print("ESP32 Message ");
+    LoRa.print(counter);
+    LoRa.endPacket();
+
+    counter++;
+    vTaskDelay(pdMS_TO_TICKS(1000)); // Use FreeRTOS delay
   }
 }
 
