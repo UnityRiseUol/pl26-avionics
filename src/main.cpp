@@ -47,7 +47,7 @@ WebServer server(80);
 Adafruit_BMP3XX bmp;
 ICM_20948_SPI icm;
 Adafruit_BNO08x bno08x(BNO08X_RESET);
-sh2_SensorValue_t bno_sensorValue;
+sh2_SensorValue_t bnoSensorValue;
 SFE_UBLOX_GNSS myGNSS;
 
 // --- SD Card and File Handling ---
@@ -55,12 +55,12 @@ char logFileName[35];
 File dataFile;
 
 // --- SDIO Pin Definitions ---
-int pin_sdioCLK = 38;
-int pin_sdioCMD = 34;
-int pin_sdioD0 = 39;
-int pin_sdioD1 = 40;
-int pin_sdioD2 = 47;
-int pin_sdioD3 = 33;
+int pinSdioClk = 38;
+int pinSdioCmd = 34;
+int pinSdioD0 = 39;
+int pinSdioD1 = 40;
+int pinSdioD2 = 47;
+int pinSdioD3 = 33;
 
 // --- Global State Variables ---
 volatile bool loggingEnabled = true;
@@ -68,36 +68,36 @@ constexpr int buttonPin = 15;
 
 // --- Vertical Speed Calculation ---
 #define VERTICAL_SPEED_SAMPLES 10
-float altitude_samples[VERTICAL_SPEED_SAMPLES] = {0};
-int sample_index = 0;
-float last_altitude = 0;
-unsigned long last_vs_time = 0;
+float altitudeSamples[VERTICAL_SPEED_SAMPLES] = {0};
+int sampleIndex = 0;
+float lastAltitude = 0;
+unsigned long lastVsTime = 0;
 
 // --- Configuration Struct ---
 struct SystemConfig {
-    float seaLevelPressureHPA;
+    float seaLevelPressureHpa;
 };
 SystemConfig config = {1013.25};
 
 // --- Shared Data Structure (Full Resolution for SD Card) ---
 struct AllSensorData {
-    float bmp_temperature, bmp_pressure, bmp_altitude, bmp_vertical_speed;
-    float icm_accX, icm_accY, icm_accZ;
-    float icm_gyrX, icm_gyrY, icm_gyrZ;
-    float icm_magX, icm_magY, icm_magZ;
-    float bno_linearAccX, bno_linearAccY, bno_linearAccZ;
-    float bno_gravityX, bno_gravityY, bno_gravityZ;
-    float bno_quatR, bno_quatI, bno_quatJ, bno_quatK;
-    float gps_latitude, gps_longitude, gps_altitude;
-    float gps_speed, gps_heading;
-    bool gps_valid;
+    float bmpTemperature, bmpPressure, bmpAltitude, bmpVerticalSpeed;
+    float icmAccX, icmAccY, icmAccZ;
+    float icmGyrX, icmGyrY, icmGyrZ;
+    float icmMagX, icmMagY, icmMagZ;
+    float bnoLinearAccX, bnoLinearAccY, bnoLinearAccZ;
+    float bnoGravityX, bnoGravityY, bnoGravityZ;
+    float bnoQuatR, bnoQuatI, bnoQuatJ, bnoQuatK;
+    float gpsLatitude, gpsLongitude, gpsAltitude;
+    float gpsSpeed, gpsHeading;
+    bool gpsValid;
 };
 
 // --- Telemetry Packet Structure (Compressed for LoRa) ---
 // Total Size: 32 bytes
 struct __attribute__((packed)) TelemetryPacket {
     float altitude;   // 4 bytes
-    float v_speed;    // 4 bytes
+    float vSpeed;    // 4 bytes
     float lat;        // 4 bytes
     float lon;        // 4 bytes
     float qR;         // 4 bytes
@@ -126,7 +126,7 @@ void saveConfiguration() {
     File configFile = SD_MMC.open("/config.txt", "w");
     if (configFile) {
         configFile.print("pressure=");
-        configFile.println(config.seaLevelPressureHPA);
+        configFile.println(config.seaLevelPressureHpa);
         configFile.close();
         Serial.println("Configuration saved to /config.txt");
     }
@@ -142,7 +142,7 @@ void loadConfiguration() {
             String line = configFile.readStringUntil('\n');
             line.trim();
             if (line.startsWith("pressure=")) {
-                config.seaLevelPressureHPA = line.substring(line.indexOf('=') + 1).toFloat();
+                config.seaLevelPressureHpa = line.substring(line.indexOf('=') + 1).toFloat();
             }
         }
         configFile.close();
@@ -209,7 +209,7 @@ void handleFileDownload() {
 
 void handleGetConfig() {
     JsonDocument doc;
-    doc["pressure"] = String(config.seaLevelPressureHPA, 2);
+    doc["pressure"] = String(config.seaLevelPressureHpa, 2);
     String output;
     serializeJson(doc, output);
     server.send(200, "application/json", output);
@@ -225,7 +225,7 @@ void handleUpdateConfig() {
     if (doc["pressure"].is<float>()) {
         float newPressure = doc["pressure"];
         if (newPressure >= 800.0 && newPressure <= 1200.0) {
-            config.seaLevelPressureHPA = newPressure;
+            config.seaLevelPressureHpa = newPressure;
             saveConfiguration();
             server.send(200, "text/plain", "Config updated.");
         } else {
@@ -244,7 +244,7 @@ void setup() {
     pinMode(buttonPin, INPUT);
 
     // Init SD Card
-    if (!SD_MMC.setPins(pin_sdioCLK, pin_sdioCMD, pin_sdioD0, pin_sdioD1, pin_sdioD2, pin_sdioD3)) {
+    if (!SD_MMC.setPins(pinSdioClk, pinSdioCmd, pinSdioD0, pinSdioD1, pinSdioD2, pinSdioD3)) {
         Serial.println("SDIO pin error"); while(true);
     }
     if (!SD_MMC.begin()) {
@@ -354,61 +354,61 @@ void highFrequencySensorTask(void *pvParameters) {
             if (xSemaphoreTake(xSpiMutex, portMAX_DELAY) == pdTRUE) {
                 // BMP Reading
                 if (bmp.performReading()) {
-                    sensorData.bmp_temperature = bmp.temperature;
-                    sensorData.bmp_pressure = bmp.pressure / 100.0;
-                    sensorData.bmp_altitude = bmp.readAltitude(config.seaLevelPressureHPA);
+                    sensorData.bmpTemperature = bmp.temperature;
+                    sensorData.bmpPressure = bmp.pressure / 100.0;
+                    sensorData.bmpAltitude = bmp.readAltitude(config.seaLevelPressureHpa);
 
-                    const unsigned long current_time = millis();
-                    if (last_vs_time > 0) {
-                        const float dt = (current_time - last_vs_time) / 1000.0f;
+                    const unsigned long currentTime = millis();
+                    if (lastVsTime > 0) {
+                        const float dt = (currentTime - lastVsTime) / 1000.0f;
                         if (dt > 0) {
-                            const float raw_vs = (sensorData.bmp_altitude - last_altitude) / dt;
-                            altitude_samples[sample_index] = raw_vs;
-                            sample_index = (sample_index + 1) % VERTICAL_SPEED_SAMPLES;
-                            float total_vs = 0;
+                            const float rawVs = (sensorData.bmpAltitude - lastAltitude) / dt;
+                            altitudeSamples[sampleIndex] = rawVs;
+                            sampleIndex = (sampleIndex + 1) % VERTICAL_SPEED_SAMPLES;
+                            float totalVs = 0;
                             for (int i = 0; i < VERTICAL_SPEED_SAMPLES; i++) {
-                                total_vs += altitude_samples[i];
+                                totalVs += altitudeSamples[i];
                             }
-                            sensorData.bmp_vertical_speed = total_vs / VERTICAL_SPEED_SAMPLES;
+                            sensorData.bmpVerticalSpeed = totalVs / VERTICAL_SPEED_SAMPLES;
                         }
                     }
-                    last_altitude = sensorData.bmp_altitude;
-                    last_vs_time = current_time;
+                    lastAltitude = sensorData.bmpAltitude;
+                    lastVsTime = currentTime;
                 }
 
                 // ICM Reading
                 if(icm.dataReady()) {
                     constexpr float G_MPS2 = 9.80665;
                     icm.getAGMT();
-                    sensorData.icm_accX = (icm.accX() / 1000.0) * G_MPS2;
-                    sensorData.icm_accY = (icm.accY() / 1000.0) * G_MPS2;
-                    sensorData.icm_accZ = (icm.accZ() / 1000.0) * G_MPS2;
-                    sensorData.icm_gyrX = icm.gyrX();
-                    sensorData.icm_gyrY = icm.gyrY();
-                    sensorData.icm_gyrZ = icm.gyrZ();
-                    sensorData.icm_magX = icm.magX();
-                    sensorData.icm_magY = icm.magY();
-                    sensorData.icm_magZ = icm.magZ();
+                    sensorData.icmAccX = (icm.accX() / 1000.0) * G_MPS2;
+                    sensorData.icmAccY = (icm.accY() / 1000.0) * G_MPS2;
+                    sensorData.icmAccZ = (icm.accZ() / 1000.0) * G_MPS2;
+                    sensorData.icmGyrX = icm.gyrX();
+                    sensorData.icmGyrY = icm.gyrY();
+                    sensorData.icmGyrZ = icm.gyrZ();
+                    sensorData.icmMagX = icm.magX();
+                    sensorData.icmMagY = icm.magY();
+                    sensorData.icmMagZ = icm.magZ();
                 }
 
                 // BNO Reading
-                if (bno08x.getSensorEvent(&bno_sensorValue)) {
-                    switch (bno_sensorValue.sensorId) {
+                if (bno08x.getSensorEvent(&bnoSensorValue)) {
+                    switch (bnoSensorValue.sensorId) {
                         case SH2_LINEAR_ACCELERATION:
-                            sensorData.bno_linearAccX = bno_sensorValue.un.linearAcceleration.x;
-                            sensorData.bno_linearAccY = bno_sensorValue.un.linearAcceleration.y;
-                            sensorData.bno_linearAccZ = bno_sensorValue.un.linearAcceleration.z;
+                            sensorData.bnoLinearAccX = bnoSensorValue.un.linearAcceleration.x;
+                            sensorData.bnoLinearAccY = bnoSensorValue.un.linearAcceleration.y;
+                            sensorData.bnoLinearAccZ = bnoSensorValue.un.linearAcceleration.z;
                             break;
                         case SH2_GRAVITY:
-                            sensorData.bno_gravityX = bno_sensorValue.un.gravity.x;
-                            sensorData.bno_gravityY = bno_sensorValue.un.gravity.y;
-                            sensorData.bno_gravityZ = bno_sensorValue.un.gravity.z;
+                            sensorData.bnoGravityX = bnoSensorValue.un.gravity.x;
+                            sensorData.bnoGravityY = bnoSensorValue.un.gravity.y;
+                            sensorData.bnoGravityZ = bnoSensorValue.un.gravity.z;
                             break;
                         case SH2_GEOMAGNETIC_ROTATION_VECTOR:
-                            sensorData.bno_quatR = bno_sensorValue.un.geoMagRotationVector.real;
-                            sensorData.bno_quatI = bno_sensorValue.un.geoMagRotationVector.i;
-                            sensorData.bno_quatJ = bno_sensorValue.un.geoMagRotationVector.j;
-                            sensorData.bno_quatK = bno_sensorValue.un.geoMagRotationVector.k;
+                            sensorData.bnoQuatR = bnoSensorValue.un.geoMagRotationVector.real;
+                            sensorData.bnoQuatI = bnoSensorValue.un.geoMagRotationVector.i;
+                            sensorData.bnoQuatJ = bnoSensorValue.un.geoMagRotationVector.j;
+                            sensorData.bnoQuatK = bnoSensorValue.un.geoMagRotationVector.k;
                             break;
                         default: ;
                     }
@@ -428,12 +428,12 @@ void gpsTask(void *pvParameters) {
                 const long rawLat = myGNSS.getLatitude();
                 const long rawLon = myGNSS.getLongitude();
                 if (rawLat != 0 || rawLon != 0) {
-                    sensorData.gps_latitude = rawLat / 10000000.0f;
-                    sensorData.gps_longitude = rawLon / 10000000.0f;
-                    sensorData.gps_altitude = myGNSS.getAltitude() / 1000.0f;
-                    sensorData.gps_speed = myGNSS.getGroundSpeed() / 1000.0f;
-                    sensorData.gps_heading = myGNSS.getHeading() / 100000.0f;
-                    sensorData.gps_valid = true;
+                    sensorData.gpsLatitude = rawLat / 10000000.0f;
+                    sensorData.gpsLongitude = rawLon / 10000000.0f;
+                    sensorData.gpsAltitude = myGNSS.getAltitude() / 1000.0f;
+                    sensorData.gpsSpeed = myGNSS.getGroundSpeed() / 1000.0f;
+                    sensorData.gpsHeading = myGNSS.getHeading() / 100000.0f;
+                    sensorData.gpsValid = true;
                 }
                 xSemaphoreGive(xSensorDataMutex);
             }
@@ -454,34 +454,34 @@ void loggingTask(void *pvParameters) {
 
             if (dataFile) {
                 dataFile.print(millis());
-                dataFile.print(","); dataFile.print(local.bmp_temperature, 2);
-                dataFile.print(","); dataFile.print(local.bmp_pressure, 2);
-                dataFile.print(","); dataFile.print(local.bmp_altitude, 2);
-                dataFile.print(","); dataFile.print(local.bmp_vertical_speed, 2);
-                dataFile.print(","); dataFile.print(local.icm_accX, 3);
-                dataFile.print(","); dataFile.print(local.icm_accY, 3);
-                dataFile.print(","); dataFile.print(local.icm_accZ, 3);
-                dataFile.print(","); dataFile.print(local.icm_gyrX, 2);
-                dataFile.print(","); dataFile.print(local.icm_gyrY, 2);
-                dataFile.print(","); dataFile.print(local.icm_gyrZ, 2);
-                dataFile.print(","); dataFile.print(local.icm_magX, 1);
-                dataFile.print(","); dataFile.print(local.icm_magY, 1);
-                dataFile.print(","); dataFile.print(local.icm_magZ, 1);
-                dataFile.print(","); dataFile.print(local.bno_linearAccX, 3);
-                dataFile.print(","); dataFile.print(local.bno_linearAccY, 3);
-                dataFile.print(","); dataFile.print(local.bno_linearAccZ, 3);
-                dataFile.print(","); dataFile.print(local.bno_gravityX, 3);
-                dataFile.print(","); dataFile.print(local.bno_gravityY, 3);
-                dataFile.print(","); dataFile.print(local.bno_gravityZ, 3);
-                dataFile.print(","); dataFile.print(local.bno_quatR, 4);
-                dataFile.print(","); dataFile.print(local.bno_quatI, 4);
-                dataFile.print(","); dataFile.print(local.bno_quatJ, 4);
-                dataFile.print(","); dataFile.print(local.bno_quatK, 4);
-                dataFile.print(","); dataFile.print(local.gps_latitude, 6);
-                dataFile.print(","); dataFile.print(local.gps_longitude, 6);
-                dataFile.print(","); dataFile.print(local.gps_altitude, 2);
-                dataFile.print(","); dataFile.print(local.gps_speed, 2);
-                dataFile.print(","); dataFile.println(local.gps_heading, 2);
+                dataFile.print(","); dataFile.print(local.bmpTemperature, 2);
+                dataFile.print(","); dataFile.print(local.bmpPressure, 2);
+                dataFile.print(","); dataFile.print(local.bmpAltitude, 2);
+                dataFile.print(","); dataFile.print(local.bmpVerticalSpeed, 2);
+                dataFile.print(","); dataFile.print(local.icmAccX, 3);
+                dataFile.print(","); dataFile.print(local.icmAccY, 3);
+                dataFile.print(","); dataFile.print(local.icmAccZ, 3);
+                dataFile.print(","); dataFile.print(local.icmGyrX, 2);
+                dataFile.print(","); dataFile.print(local.icmGyrY, 2);
+                dataFile.print(","); dataFile.print(local.icmGyrZ, 2);
+                dataFile.print(","); dataFile.print(local.icmMagX, 1);
+                dataFile.print(","); dataFile.print(local.icmMagY, 1);
+                dataFile.print(","); dataFile.print(local.icmMagZ, 1);
+                dataFile.print(","); dataFile.print(local.bnoLinearAccX, 3);
+                dataFile.print(","); dataFile.print(local.bnoLinearAccY, 3);
+                dataFile.print(","); dataFile.print(local.bnoLinearAccZ, 3);
+                dataFile.print(","); dataFile.print(local.bnoGravityX, 3);
+                dataFile.print(","); dataFile.print(local.bnoGravityY, 3);
+                dataFile.print(","); dataFile.print(local.bnoGravityZ, 3);
+                dataFile.print(","); dataFile.print(local.bnoQuatR, 4);
+                dataFile.print(","); dataFile.print(local.bnoQuatI, 4);
+                dataFile.print(","); dataFile.print(local.bnoQuatJ, 4);
+                dataFile.print(","); dataFile.print(local.bnoQuatK, 4);
+                dataFile.print(","); dataFile.print(local.gpsLatitude, 6);
+                dataFile.print(","); dataFile.print(local.gpsLongitude, 6);
+                dataFile.print(","); dataFile.print(local.gpsAltitude, 2);
+                dataFile.print(","); dataFile.print(local.gpsSpeed, 2);
+                dataFile.print(","); dataFile.println(local.gpsHeading, 2);
             }
 
             if (millis() - lastFlush >= 1000) {
@@ -535,14 +535,14 @@ void loraTask(void *pvParameters) {
 
         // 1. Gather Data (Quick Mutex Lock)
         if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
-            packet.altitude = sensorData.bmp_altitude;
-            packet.v_speed  = sensorData.bmp_vertical_speed;
-            packet.lat      = sensorData.gps_latitude;
-            packet.lon      = sensorData.gps_longitude;
-            packet.qR       = sensorData.bno_quatR;
-            packet.qI       = sensorData.bno_quatI;
-            packet.qJ       = sensorData.bno_quatJ;
-            packet.qK       = sensorData.bno_quatK;
+            packet.altitude = sensorData.bmpAltitude;
+            packet.vSpeed  = sensorData.bmpVerticalSpeed;
+            packet.lat      = sensorData.gpsLatitude;
+            packet.lon      = sensorData.gpsLongitude;
+            packet.qR       = sensorData.bnoQuatR;
+            packet.qI       = sensorData.bnoQuatI;
+            packet.qJ       = sensorData.bnoQuatJ;
+            packet.qK       = sensorData.bnoQuatK;
             xSemaphoreGive(xSensorDataMutex);
         }
 
