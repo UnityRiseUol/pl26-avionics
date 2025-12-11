@@ -36,9 +36,8 @@
 #define RFM95_CS    7
 #define RFM95_RST   5
 #define RFM95_INT   6
-#define LORA_SCK_PIN 12
-#define LORA_MISO_PIN 13
-#define LORA_MOSI_PIN 11
+// Note: Using default SPI pins for LoRa to share bus with sensors
+// LORA_SCK_PIN 12, LORA_MISO_PIN 13, LORA_MOSI_PIN 11 are default on S3
 #define BAND 868E6
 
 // --- WiFi & Web Server ---
@@ -52,7 +51,6 @@ ICM_20948_SPI icm;
 Adafruit_BNO08x bno08x(BNO08X_RESET);
 sh2_SensorValue_t bno_sensorValue;
 SFE_UBLOX_GNSS myGNSS;
-SPIClass loraSPI(HSPI); // New SPI bus for LoRa module
 
 // --- SD Card and File Handling ---
 char logFileName[35]; // Stores the generated log file name
@@ -97,6 +95,7 @@ AllSensorData sensorData = {0};
 
 // --- RTOS Synchronization ---
 SemaphoreHandle_t xSensorDataMutex;
+SemaphoreHandle_t xSpiMutex; // Mutex for shared SPI bus
 
 // --- Task Function Prototypes ---
 void highFrequencySensorTask(void *pvParameters);
@@ -330,9 +329,14 @@ void setup() {
         Serial.println("Error creating log file!"); while(true);
     }
 
+    // --- Create RTOS Mutexes ---
+    xSensorDataMutex = xSemaphoreCreateMutex();
+    xSpiMutex = xSemaphoreCreateMutex();
+
     // --- Initialise sensors ---
     Wire.begin(); // Starts I2C
-    SPI.begin(); // Starts SPI
+    SPI.begin(); // Starts SPI (Default pins: SCK=12, MISO=13, MOSI=11 on S3)
+    
     if (!bmp.begin_SPI(BMP_CS)) { Serial.println("BMP390 Init Failed"); while (true); }
     icm.begin(ICM_CS, SPI);
     if (icm.status != ICM_20948_Stat_Ok) { Serial.println("ICM20948 Init Failed"); while (true); }
@@ -351,6 +355,18 @@ void setup() {
     myGNSS.setAutoPVT(true);
 
     Serial.println("All sensors initialised.");
+
+    // --- Initialise LoRa ---
+    // Using the same SPI bus as sensors, so we configure it here
+    LoRa.setSPI(SPI);
+    LoRa.setPins(RFM95_CS, RFM95_RST, RFM95_INT);
+    if (!LoRa.begin(BAND)) {
+        Serial.println("Starting LoRa failed!");
+        // We continue even if LoRa fails, but log it
+    } else {
+        LoRa.setTxPower(20);
+        Serial.println("LoRa Initialized at 868MHz High Power!");
+    }
 
     // --- Configure and start Web Server ---
     Serial.println("\nConfiguring Access Point...");
@@ -371,10 +387,6 @@ void setup() {
     server.begin();
     Serial.println("HTTP server started successfully.");
 
-
-    // --- Create RTOS Mutex ---
-    xSensorDataMutex = xSemaphoreCreateMutex();
-
     // Create the concurrent tasks.
     // xTaskCreatePinnedToCore(function, name, stack size, params, priority, handle, core)
     xTaskCreatePinnedToCore(highFrequencySensorTask, "HighFreqTask", 4096, nullptr, 3, nullptr, 1); // Highest priority
@@ -382,7 +394,7 @@ void setup() {
     xTaskCreatePinnedToCore(loggingTask,             "LoggingTask",   4096, nullptr, 2, nullptr, 0); // Medium priority, on core 0
     xTaskCreatePinnedToCore(buttonTask,              "ButtonTask",    2048, nullptr, 2, nullptr, 0); // Medium priority, on core 0
     xTaskCreatePinnedToCore(webServerTask,           "WebServerTask", 4096, nullptr, 1, nullptr, 0); // Low priority, on core 0
-    xTaskCreatePinnedToCore(loraTask,                "LoRaTask",      4096, nullptr, 1, nullptr, 0); // Low priority, on core 0
+    xTaskCreatePinnedToCore(loraTask,                "LoRaTask",      4096, nullptr, 2, nullptr, 1); // Medium priority, on core 1
 }
 
 // --- TASK 1: High-Frequency Sensor Polling ---
@@ -392,51 +404,54 @@ void highFrequencySensorTask(void *pvParameters) {
     for (;;) { // Infinite loop
         // Attempt to take the mutex, will wait indefinitely if busy
         if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
-
-            // Read BMP390
-            if (bmp.performReading()) {
-                sensorData.bmp_temperature = bmp.temperature;
-                sensorData.bmp_pressure = bmp.pressure / 100.0;
-                // --- MODIFIED: Use the sea level pressure from the config struct ---
-                sensorData.bmp_altitude = bmp.readAltitude(config.seaLevelPressureHPA);
-            }
-
-            // Read ICM20948
-            icm.getAGMT();
-            constexpr float G_MPS2 = 9.80665;
-            sensorData.icm_accX = (icm.accX() / 1000.0) * G_MPS2;
-            sensorData.icm_accY = (icm.accY() / 1000.0) * G_MPS2;
-            sensorData.icm_accZ = (icm.accZ() / 1000.0) * G_MPS2;
-            sensorData.icm_gyrX = icm.gyrX();
-            sensorData.icm_gyrY = icm.gyrY();
-            sensorData.icm_gyrZ = icm.gyrZ();
-            sensorData.icm_magX = icm.magX();
-            sensorData.icm_magY = icm.magY();
-            sensorData.icm_magZ = icm.magZ();
-
-            // Read BNO085
-            if (bno08x.getSensorEvent(&bno_sensorValue)) {
-                switch (bno_sensorValue.sensorId) {
-                    case SH2_LINEAR_ACCELERATION:
-                        sensorData.bno_linearAccX = bno_sensorValue.un.linearAcceleration.x;
-                        sensorData.bno_linearAccY = bno_sensorValue.un.linearAcceleration.y;
-                        sensorData.bno_linearAccZ = bno_sensorValue.un.linearAcceleration.z;
-                        break;
-                    case SH2_GRAVITY:
-                        sensorData.bno_gravityX = bno_sensorValue.un.gravity.x;
-                        sensorData.bno_gravityY = bno_sensorValue.un.gravity.y;
-                        sensorData.bno_gravityZ = bno_sensorValue.un.gravity.z;
-                        break;
-                    case SH2_GEOMAGNETIC_ROTATION_VECTOR:
-                        sensorData.bno_quatR = bno_sensorValue.un.geoMagRotationVector.real;
-                        sensorData.bno_quatI = bno_sensorValue.un.geoMagRotationVector.i;
-                        sensorData.bno_quatJ = bno_sensorValue.un.geoMagRotationVector.j;
-                        sensorData.bno_quatK = bno_sensorValue.un.geoMagRotationVector.k;
-                        break;
-                    default: ;
+            
+            // Take SPI mutex before accessing sensors
+            if (xSemaphoreTake(xSpiMutex, portMAX_DELAY) == pdTRUE) {
+                // Read BMP390
+                if (bmp.performReading()) {
+                    sensorData.bmp_temperature = bmp.temperature;
+                    sensorData.bmp_pressure = bmp.pressure / 100.0;
+                    sensorData.bmp_altitude = bmp.readAltitude(config.seaLevelPressureHPA);
                 }
+
+                // Read ICM20948
+                icm.getAGMT();
+                constexpr float G_MPS2 = 9.80665;
+                sensorData.icm_accX = (icm.accX() / 1000.0) * G_MPS2;
+                sensorData.icm_accY = (icm.accY() / 1000.0) * G_MPS2;
+                sensorData.icm_accZ = (icm.accZ() / 1000.0) * G_MPS2;
+                sensorData.icm_gyrX = icm.gyrX();
+                sensorData.icm_gyrY = icm.gyrY();
+                sensorData.icm_gyrZ = icm.gyrZ();
+                sensorData.icm_magX = icm.magX();
+                sensorData.icm_magY = icm.magY();
+                sensorData.icm_magZ = icm.magZ();
+
+                // Read BNO085
+                if (bno08x.getSensorEvent(&bno_sensorValue)) {
+                    switch (bno_sensorValue.sensorId) {
+                        case SH2_LINEAR_ACCELERATION:
+                            sensorData.bno_linearAccX = bno_sensorValue.un.linearAcceleration.x;
+                            sensorData.bno_linearAccY = bno_sensorValue.un.linearAcceleration.y;
+                            sensorData.bno_linearAccZ = bno_sensorValue.un.linearAcceleration.z;
+                            break;
+                        case SH2_GRAVITY:
+                            sensorData.bno_gravityX = bno_sensorValue.un.gravity.x;
+                            sensorData.bno_gravityY = bno_sensorValue.un.gravity.y;
+                            sensorData.bno_gravityZ = bno_sensorValue.un.gravity.z;
+                            break;
+                        case SH2_GEOMAGNETIC_ROTATION_VECTOR:
+                            sensorData.bno_quatR = bno_sensorValue.un.geoMagRotationVector.real;
+                            sensorData.bno_quatI = bno_sensorValue.un.geoMagRotationVector.i;
+                            sensorData.bno_quatJ = bno_sensorValue.un.geoMagRotationVector.j;
+                            sensorData.bno_quatK = bno_sensorValue.un.geoMagRotationVector.k;
+                            break;
+                        default: ;
+                    }
+                }
+                xSemaphoreGive(xSpiMutex); // Release SPI bus
             }
-            // Release the mutex lock
+            // Release the data mutex lock
             xSemaphoreGive(xSensorDataMutex);
         }
         // Wait for 1 millisecond
@@ -590,36 +605,41 @@ void webServerTask(void *pvParameters) {
 }
 
 // --- TASK 6: LoRa Transmitter ---
-// Priority: 1 (Low).
-// Purpose: Broadcasts a message every second via LoRa.
+// Purpose: Broadcasts sensor data every second via LoRa.
 void loraTask(void *pvParameters) {
   Serial.println("ESP32-S3 LoRa Transmitter Task Started");
 
-  // Initialize SPI for LoRa on separate pins
-  loraSPI.begin(LORA_SCK_PIN, LORA_MISO_PIN, LORA_MOSI_PIN);
-  LoRa.setSPI(loraSPI);
-  LoRa.setPins(RFM95_CS, RFM95_RST, RFM95_INT);
-
-  if (!LoRa.begin(BAND)) {
-    Serial.println("Starting LoRa failed!");
-    vTaskDelete(nullptr); // End this task if LoRa fails
-  }
-
-  LoRa.setTxPower(20);
-  Serial.println("LoRa Initialized at 868MHz High Power!");
-
-  int counter = 0;
+  // Offset start to avoid sync with logging flush
+  vTaskDelay(pdMS_TO_TICKS(500));
 
   for (;;) { // Infinite loop
-    Serial.print("Sending packet: ");
-    Serial.println(counter);
+    float altitude = 0, latitude = 0, longitude = 0;
 
-    LoRa.beginPacket();
-    LoRa.print("ESP32 Message ");
-    LoRa.print(counter);
-    LoRa.endPacket();
+    // Safely read the sensor data
+    if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
+        altitude = sensorData.bmp_altitude;
+        latitude = sensorData.gps_latitude;
+        longitude = sensorData.gps_longitude;
+        xSemaphoreGive(xSensorDataMutex);
+    }
 
-    counter++;
+    // Construct the message string
+    char message[100];
+    snprintf(message, sizeof(message), "ALT:%.2f,LAT:%.6f,LON:%.6f", altitude, latitude, longitude);
+
+    Serial.print("Sending LoRa packet: ");
+    Serial.println(message);
+
+    // Take SPI mutex before using LoRa
+    if (xSemaphoreTake(xSpiMutex, portMAX_DELAY) == pdTRUE) {
+        LoRa.beginPacket();
+        LoRa.print(message);
+        LoRa.endPacket(true); // Async send to minimize blocking time
+        xSemaphoreGive(xSpiMutex);
+    }
+
+    Serial.println("Packet sent.");
+
     vTaskDelay(pdMS_TO_TICKS(1000)); // Use FreeRTOS delay
   }
 }
