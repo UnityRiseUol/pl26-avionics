@@ -1,5 +1,5 @@
 /*
- * File:        main.ino
+ * File:        main.cpp
  * Author:      Joseph Wood
  * Last Update: 21/10/2025
  *
@@ -68,6 +68,13 @@ int pin_sdioD3 = 33;
 volatile bool loggingEnabled = true;
 constexpr int buttonPin = 15;
 
+// --- Vertical Speed Calculation ---
+#define VERTICAL_SPEED_SAMPLES 10 // Number of samples for moving average
+float altitude_samples[VERTICAL_SPEED_SAMPLES] = {0};
+int sample_index = 0;
+float last_altitude = 0;
+unsigned long last_vs_time = 0;
+
 // --- NEW: Configuration Struct ---
 // Holds all system settings. Add new settings here.
 struct SystemConfig {
@@ -78,7 +85,7 @@ SystemConfig config = {1013.25};
 
 // --- Shared Data Structure ---
 struct AllSensorData {
-    float bmp_temperature, bmp_pressure, bmp_altitude;
+    float bmp_temperature, bmp_pressure, bmp_altitude, bmp_vertical_speed;
     float icm_accX, icm_accY, icm_accZ;
     float icm_gyrX, icm_gyrY, icm_gyrZ;
     float icm_magX, icm_magY, icm_magZ;
@@ -316,7 +323,7 @@ void setup() {
     // Open the new file and write the CSV header
     dataFile = SD_MMC.open(logFileName, FILE_WRITE);
     if (dataFile) {
-        dataFile.println("Time(ms),Temp(C),Pressure(hPa),Altitude(m),"
+        dataFile.println("Time(ms),Temp(C),Pressure(hPa),Altitude(m),V_Speed(m/s),"
                          "ICM_AccX(m/s^2),ICM_AccY(m/s^2),ICM_AccZ(m/s^2),"
                          "ICM_GyrX(dps),ICM_GyrY(dps),ICM_GyrZ(dps),"
                          "ICM_MagX(uT),ICM_MagY(uT),ICM_MagZ(uT),"
@@ -364,7 +371,7 @@ void setup() {
         Serial.println("Starting LoRa failed!");
         // We continue even if LoRa fails, but log it
     } else {
-        LoRa.setTxPower(20);
+        LoRa.setTxPower(2);
         Serial.println("LoRa Initialized at 868MHz High Power!");
     }
 
@@ -412,6 +419,29 @@ void highFrequencySensorTask(void *pvParameters) {
                     sensorData.bmp_temperature = bmp.temperature;
                     sensorData.bmp_pressure = bmp.pressure / 100.0;
                     sensorData.bmp_altitude = bmp.readAltitude(config.seaLevelPressureHPA);
+
+                    // --- Vertical Speed Calculation ---
+                    unsigned long current_time = millis();
+                    if (last_vs_time > 0) {
+                        float dt = (current_time - last_vs_time) / 1000.0f; // Time difference in seconds
+                        if (dt > 0) {
+                            float raw_vs = (sensorData.bmp_altitude - last_altitude) / dt;
+
+                            // Add to moving average buffer
+                            altitude_samples[sample_index] = raw_vs;
+                            sample_index = (sample_index + 1) % VERTICAL_SPEED_SAMPLES;
+
+                            // Calculate moving average
+                            float total_vs = 0;
+                            for (int i = 0; i < VERTICAL_SPEED_SAMPLES; i++) {
+                                total_vs += altitude_samples[i];
+                            }
+                            sensorData.bmp_vertical_speed = total_vs / VERTICAL_SPEED_SAMPLES;
+                        }
+                    }
+                    last_altitude = sensorData.bmp_altitude;
+                    last_vs_time = current_time;
+                    // --- End Vertical Speed Calculation ---
                 }
 
                 // Read ICM20948
@@ -508,6 +538,7 @@ void loggingTask(void *pvParameters) {
                 dataFile.print(","); dataFile.print(localData.bmp_temperature, 2);
                 dataFile.print(","); dataFile.print(localData.bmp_pressure, 2);
                 dataFile.print(","); dataFile.print(localData.bmp_altitude, 2);
+                dataFile.print(","); dataFile.print(localData.bmp_vertical_speed, 2);
                 dataFile.print(","); dataFile.print(localData.icm_accX, 4);
                 dataFile.print(","); dataFile.print(localData.icm_accY, 4);
                 dataFile.print(","); dataFile.print(localData.icm_accZ, 4);
@@ -605,7 +636,7 @@ void webServerTask(void *pvParameters) {
 }
 
 // --- TASK 6: LoRa Transmitter ---
-// Purpose: Broadcasts sensor data every second via LoRa.
+// Purpose: Broadcasts sensor data at high frequency via LoRa.
 void loraTask(void *pvParameters) {
   Serial.println("ESP32-S3 LoRa Transmitter Task Started");
 
@@ -613,19 +644,26 @@ void loraTask(void *pvParameters) {
   vTaskDelay(pdMS_TO_TICKS(500));
 
   for (;;) { // Infinite loop
-    float altitude = 0, latitude = 0, longitude = 0;
+    float altitude = 0, latitude = 0, longitude = 0, vertical_speed = 0;
+    float quatR = 0, quatI = 0, quatJ = 0, quatK = 0;
 
     // Safely read the sensor data
     if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
         altitude = sensorData.bmp_altitude;
         latitude = sensorData.gps_latitude;
         longitude = sensorData.gps_longitude;
+        vertical_speed = sensorData.bmp_vertical_speed;
+        quatR = sensorData.bno_quatR;
+        quatI = sensorData.bno_quatI;
+        quatJ = sensorData.bno_quatJ;
+        quatK = sensorData.bno_quatK;
         xSemaphoreGive(xSensorDataMutex);
     }
 
     // Construct the message string
-    char message[100];
-    snprintf(message, sizeof(message), "ALT:%.2f,LAT:%.6f,LON:%.6f", altitude, latitude, longitude);
+    char message[200];
+    snprintf(message, sizeof(message), "%.2f,%.6f,%.6f,%.2f,%.4f,%.4f,%.4f,%.4f",
+             altitude, latitude, longitude, vertical_speed, quatR, quatI, quatJ, quatK);
 
     Serial.print("Sending LoRa packet: ");
     Serial.println(message);
@@ -640,7 +678,7 @@ void loraTask(void *pvParameters) {
 
     Serial.println("Packet sent.");
 
-    vTaskDelay(pdMS_TO_TICKS(1000)); // Use FreeRTOS delay
+    vTaskDelay(pdMS_TO_TICKS(10)); // Use FreeRTOS delay
   }
 }
 
