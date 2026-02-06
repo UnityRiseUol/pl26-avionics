@@ -24,6 +24,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
+#include <INS_Model_C.h> // Library header
 
 // --- Definitions ---
 #define BMP_CS 18
@@ -108,6 +109,10 @@ struct __attribute__((packed)) TelemetryPacket {
 
 // Global instances
 AllSensorData sensorData = {0};
+INS_Model_C insModel;
+INS_Model_C::ExtU_INS_Model_C_T insInputs;
+INS_Model_C::ExtY_INS_Model_C_T insOutputs;
+bool insRefInitialized = false;
 
 // --- RTOS Synchronization ---
 SemaphoreHandle_t xSensorDataMutex;
@@ -312,6 +317,10 @@ void setup() {
 
     Serial.println("Sensors Initialised.");
 
+    // Model Initialization
+    insModel.initialize();
+    Serial.println("INS Model Initialised.");
+
     // --- LoRa Setup (Optimized for Speed) ---
     LoRa.setSPI(SPI);
     LoRa.setPins(RFM95_CS, RFM95_RST, RFM95_INT);
@@ -415,9 +424,65 @@ void highFrequencySensorTask(void *pvParameters) {
                 }
                 xSemaphoreGive(xSpiMutex);
             }
+
+            // --- INS Model Input Map ---
+            insInputs.GPS_LL[0] = sensorData.gpsLatitude;
+            insInputs.GPS_LL[1] = sensorData.gpsLongitude;
+            insInputs.BMP_Altitude = sensorData.bmpAltitude;
+
+            insInputs.BNO_Quaternion[0] = sensorData.bnoQuatR;
+            insInputs.BNO_Quaternion[1] = sensorData.bnoQuatI;
+            insInputs.BNO_Quaternion[2] = sensorData.bnoQuatJ;
+            insInputs.BNO_Quaternion[3] = sensorData.bnoQuatK;
+
+            insInputs.BNO_Lin_Accel[0] = sensorData.bnoLinearAccX;
+            insInputs.BNO_Lin_Accel[1] = sensorData.bnoLinearAccY;
+            insInputs.BNO_Lin_Accel[2] = sensorData.bnoLinearAccZ;
+
+            // --- REFERENCE CHECK ---
+            // We only lock the reference if GPS is valid AND we haven't locked it yet
+            if (!insRefInitialized && sensorData.gpsValid) {
+                // Simple sanity check: Don't lock to (0,0) coordinates
+                if (abs(sensorData.gpsLatitude) > 0.001f) {
+                    insInputs.LL_ref[0] = sensorData.gpsLatitude;
+                    insInputs.LL_ref[1] = sensorData.gpsLongitude;
+                    insInputs.h_ref = sensorData.bmpAltitude;
+                    insRefInitialized = true;
+                    Serial.println("INS: Launch Reference Locked.");
+                }
+            }
+
+            // If not initialized, ensure we don't pass garbage (optional, but safe)
+            if (!insRefInitialized) {
+                 insInputs.LL_ref[0] = 0.0;
+                 insInputs.LL_ref[1] = 0.0;
+                 insInputs.h_ref = 0.0;
+            }
+
+            // --- NAN PROTECTION (CRITICAL FIX) ---
+            // Calculate Magnitude of Quaternion: R^2 + I^2 + J^2 + K^2
+            float quatNorm = (sensorData.bnoQuatR * sensorData.bnoQuatR) +
+                             (sensorData.bnoQuatI * sensorData.bnoQuatI) +
+                             (sensorData.bnoQuatJ * sensorData.bnoQuatJ) +
+                             (sensorData.bnoQuatK * sensorData.bnoQuatK);
+
+            // Only step the model if Reference is Locked AND Quaternion is valid
+            // quatNorm close to 1.0 means valid rotation. 0.0 means uninitialized sensor.
+            if (insRefInitialized && quatNorm > 0.001f) {
+                insModel.setExternalInputs(&insInputs);
+                insModel.step();
+                insOutputs = insModel.getExternalOutputs();
+            } else {
+                // If waiting, ensure outputs are zeroed or safe
+                // (Optional: Print "Aligning..." occasionally here)
+            }
+
             xSemaphoreGive(xSensorDataMutex);
         }
-        vTaskDelay(pdMS_TO_TICKS(2)); // Polling delay
+
+        // --- TIMING FIX ---
+        // Changed from 2ms to 10ms to match Simulink Model (100Hz)
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -444,14 +509,18 @@ void gpsTask(void *pvParameters) {
 
 void loggingTask(void *pvParameters) {
     unsigned long lastFlush = 0;
+    unsigned long lastPrint = 0;
     for (;;) {
-        if (loggingEnabled) {
-            AllSensorData local;
-            if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
-                memcpy(&local, &sensorData, sizeof(AllSensorData));
-                xSemaphoreGive(xSensorDataMutex);
-            }
+        AllSensorData local;
+        INS_Model_C::ExtY_INS_Model_C_T localIns;
+        
+        if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
+            memcpy(&local, &sensorData, sizeof(AllSensorData));
+            localIns = insOutputs;
+            xSemaphoreGive(xSensorDataMutex);
+        }
 
+        if (loggingEnabled) {
             if (dataFile) {
                 dataFile.print(millis());
                 dataFile.print(","); dataFile.print(local.bmpTemperature, 2);
@@ -489,6 +558,14 @@ void loggingTask(void *pvParameters) {
                 if(dataFile) dataFile.flush();
             }
         }
+        
+        if (millis() - lastPrint >= 1000) {
+            lastPrint = millis();
+            Serial.printf("INS: X=%.2f Y=%.2f Z=%.2f Lat=%.6f Lon=%.6f\n", 
+                localIns.X_Estimate, localIns.Y_Estimate, localIns.Z_Estimate, 
+                localIns.Lat_Estimate, localIns.Long_Estimate);
+        }
+        
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
