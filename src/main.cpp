@@ -19,8 +19,8 @@
 #include <SparkFun_u-blox_GNSS_Arduino_Library.h>
 #include "FS.h"
 #include "SD_MMC.h"
-#include <stdio.h>
-#include <string.h>
+#include <cstdio>
+#include <cstring>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
@@ -266,9 +266,16 @@ void setup() {
         while(file) {
             const char* fileName = file.name();
             if (strstr(fileName, "Flight_Data_") && strstr(fileName, ".csv")) {
-                int currentNum = 0;
-                if (sscanf(fileName, "/Flight_Data_%d.csv", &currentNum) == 1 || sscanf(fileName, "Flight_Data_%d.csv", &currentNum) == 1) {
-                    if (currentNum > maxLogNum) { maxLogNum = currentNum; }
+                const char* p = fileName;
+                if (p[0] == '/') p++;
+                if (strncmp(p, "Flight_Data_", 12) == 0) {
+                    char* end;
+                    long val = strtol(p + 12, &end, 10);
+                    if (end != p + 12 && strcmp(end, ".csv") == 0) {
+                        int currentNum = 0;
+                        currentNum = static_cast<int>(val);
+                        if (currentNum > maxLogNum) { maxLogNum = currentNum; }
+                    }
                 }
             }
             file.close();
@@ -363,20 +370,20 @@ void highFrequencySensorTask(void *pvParameters) {
             if (xSemaphoreTake(xSpiMutex, portMAX_DELAY) == pdTRUE) {
                 // BMP Reading
                 if (bmp.performReading()) {
-                    sensorData.bmpTemperature = bmp.temperature;
-                    sensorData.bmpPressure = bmp.pressure / 100.0;
+                    sensorData.bmpTemperature = static_cast<float>(bmp.temperature);
+                    sensorData.bmpPressure = static_cast<float>(bmp.pressure / 100.0);
                     sensorData.bmpAltitude = bmp.readAltitude(config.seaLevelPressureHpa);
 
                     const unsigned long currentTime = millis();
                     if (lastVsTime > 0) {
-                        const float dt = (currentTime - lastVsTime) / 1000.0f;
+                        const float dt = static_cast<float>(currentTime - lastVsTime) / 1000.0f;
                         if (dt > 0) {
                             const float rawVs = (sensorData.bmpAltitude - lastAltitude) / dt;
                             altitudeSamples[sampleIndex] = rawVs;
                             sampleIndex = (sampleIndex + 1) % VERTICAL_SPEED_SAMPLES;
                             float totalVs = 0;
-                            for (int i = 0; i < VERTICAL_SPEED_SAMPLES; i++) {
-                                totalVs += altitudeSamples[i];
+                            for (float altitudeSample : altitudeSamples) {
+                                totalVs += altitudeSample;
                             }
                             sensorData.bmpVerticalSpeed = totalVs / VERTICAL_SPEED_SAMPLES;
                         }
@@ -387,11 +394,11 @@ void highFrequencySensorTask(void *pvParameters) {
 
                 // ICM Reading
                 if(icm.dataReady()) {
-                    constexpr float G_MPS2 = 9.80665;
+                    constexpr float G_MPS2 = 9.80665f;
                     icm.getAGMT();
-                    sensorData.icmAccX = (icm.accX() / 1000.0) * G_MPS2;
-                    sensorData.icmAccY = (icm.accY() / 1000.0) * G_MPS2;
-                    sensorData.icmAccZ = (icm.accZ() / 1000.0) * G_MPS2;
+                    sensorData.icmAccX = (icm.accX() / 1000.0f) * G_MPS2;
+                    sensorData.icmAccY = (icm.accY() / 1000.0f) * G_MPS2;
+                    sensorData.icmAccZ = (icm.accZ() / 1000.0f) * G_MPS2;
                     sensorData.icmGyrX = icm.gyrX();
                     sensorData.icmGyrY = icm.gyrY();
                     sensorData.icmGyrZ = icm.gyrZ();
@@ -493,11 +500,11 @@ void gpsTask(void *pvParameters) {
                 const long rawLat = myGNSS.getLatitude();
                 const long rawLon = myGNSS.getLongitude();
                 if (rawLat != 0 || rawLon != 0) {
-                    sensorData.gpsLatitude = rawLat / 10000000.0f;
-                    sensorData.gpsLongitude = rawLon / 10000000.0f;
-                    sensorData.gpsAltitude = myGNSS.getAltitude() / 1000.0f;
-                    sensorData.gpsSpeed = myGNSS.getGroundSpeed() / 1000.0f;
-                    sensorData.gpsHeading = myGNSS.getHeading() / 100000.0f;
+                    sensorData.gpsLatitude = static_cast<float>(rawLat) / 10000000.0f;
+                    sensorData.gpsLongitude = static_cast<float>(rawLon) / 10000000.0f;
+                    sensorData.gpsAltitude = static_cast<float>(myGNSS.getAltitude()) / 1000.0f;
+                    sensorData.gpsSpeed = static_cast<float>(myGNSS.getGroundSpeed()) / 1000.0f;
+                    sensorData.gpsHeading = static_cast<float>(myGNSS.getHeading()) / 100000.0f;
                     sensorData.gpsValid = true;
                 }
                 xSemaphoreGive(xSensorDataMutex);
@@ -511,8 +518,8 @@ void loggingTask(void *pvParameters) {
     unsigned long lastFlush = 0;
     unsigned long lastPrint = 0;
     for (;;) {
-        AllSensorData local;
-        INS_Model_C::ExtY_INS_Model_C_T localIns;
+        AllSensorData local = {};
+        INS_Model_C::ExtY_INS_Model_C_T localIns = {};
         
         if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
             memcpy(&local, &sensorData, sizeof(AllSensorData));
@@ -550,7 +557,7 @@ void loggingTask(void *pvParameters) {
                 dataFile.print(","); dataFile.print(local.gpsLongitude, 6);
                 dataFile.print(","); dataFile.print(local.gpsAltitude, 2);
                 dataFile.print(","); dataFile.print(local.gpsSpeed, 2);
-                dataFile.print(","); dataFile.println(local.gpsHeading, 2);
+                dataFile.println(local.gpsHeading, 2); // Removed extra comma
             }
 
             if (millis() - lastFlush >= 1000) {
@@ -559,7 +566,7 @@ void loggingTask(void *pvParameters) {
             }
         }
         
-        if (millis() - lastPrint >= 1000) {
+        if (millis() - lastPrint >= 100) {
             lastPrint = millis();
             Serial.printf("INS: X=%.2f Y=%.2f Z=%.2f Lat=%.6f Lon=%.6f\n", 
                 localIns.X_Estimate, localIns.Y_Estimate, localIns.Z_Estimate, 
@@ -608,7 +615,7 @@ void loraTask(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for system stability
 
     for (;;) {
-        TelemetryPacket packet;
+        TelemetryPacket packet{};
 
         // 1. Gather Data (Quick Mutex Lock)
         if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
