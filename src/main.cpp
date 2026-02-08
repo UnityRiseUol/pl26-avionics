@@ -447,9 +447,9 @@ void highFrequencySensorTask(void *pvParameters) {
             insInputs.BNO_Lin_Accel[2] = sensorData.bnoLinearAccZ;
 
             // --- REFERENCE CHECK ---
-            // We only lock the reference if GPS is valid AND we haven't locked it yet
+            // Only lock the reference if GPS is valid, and it hasn't locked it yet
             if (!insRefInitialized && sensorData.gpsValid) {
-                // Simple sanity check: Don't lock to (0,0) coordinates
+                // Don't lock to (0,0) coordinates
                 if (abs(sensorData.gpsLatitude) > 0.001f) {
                     insInputs.LL_ref[0] = sensorData.gpsLatitude;
                     insInputs.LL_ref[1] = sensorData.gpsLongitude;
@@ -459,36 +459,31 @@ void highFrequencySensorTask(void *pvParameters) {
                 }
             }
 
-            // If not initialized, ensure we don't pass garbage (optional, but safe)
+            // If not initialised, ensure we don't pass garbage data
             if (!insRefInitialized) {
                  insInputs.LL_ref[0] = 0.0;
                  insInputs.LL_ref[1] = 0.0;
                  insInputs.h_ref = 0.0;
             }
 
-            // --- NAN PROTECTION (CRITICAL FIX) ---
+            // --- NaN Protection ---
             // Calculate Magnitude of Quaternion: R^2 + I^2 + J^2 + K^2
-            float quatNorm = (sensorData.bnoQuatR * sensorData.bnoQuatR) +
+            const float quatNorm = (sensorData.bnoQuatR * sensorData.bnoQuatR) +
                              (sensorData.bnoQuatI * sensorData.bnoQuatI) +
                              (sensorData.bnoQuatJ * sensorData.bnoQuatJ) +
                              (sensorData.bnoQuatK * sensorData.bnoQuatK);
 
-            // Only step the model if Reference is Locked AND Quaternion is valid
-            // quatNorm close to 1.0 means valid rotation. 0.0 means uninitialized sensor.
+            // Only step the model if Reference is Locked and Quaternion is valid
             if (insRefInitialized && quatNorm > 0.001f) {
                 insModel.setExternalInputs(&insInputs);
                 insModel.step();
                 insOutputs = insModel.getExternalOutputs();
             } else {
                 // If waiting, ensure outputs are zeroed or safe
-                // (Optional: Print "Aligning..." occasionally here)
             }
 
             xSemaphoreGive(xSensorDataMutex);
         }
-
-        // --- TIMING FIX ---
-        // Changed from 2ms to 10ms to match Simulink Model (100Hz)
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -557,7 +552,7 @@ void loggingTask(void *pvParameters) {
                 dataFile.print(","); dataFile.print(local.gpsLongitude, 6);
                 dataFile.print(","); dataFile.print(local.gpsAltitude, 2);
                 dataFile.print(","); dataFile.print(local.gpsSpeed, 2);
-                dataFile.println(local.gpsHeading, 2); // Removed extra comma
+                dataFile.println(local.gpsHeading, 2);
             }
 
             if (millis() - lastFlush >= 1000) {
