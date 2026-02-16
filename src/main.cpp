@@ -618,7 +618,7 @@ void loraTask(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(2000));
 
     for (;;) {
-        TelemetryPacket packet;
+        TelemetryPacket packet{};
 
         // 1. Thread-safe data copy
         if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
@@ -630,9 +630,9 @@ void loraTask(void *pvParameters) {
             packet.qI       = sensorData.bnoQuatI;
             packet.qJ       = sensorData.bnoQuatJ;
             packet.qK       = sensorData.bnoQuatK;
-            packet.insX     = insOutputs.X_Estimate;
-            packet.insY     = insOutputs.Y_Estimate;
-            packet.insZ     = insOutputs.Z_Estimate;
+            packet.insX     = static_cast<float>(insOutputs.X_Estimate);
+            packet.insY     = static_cast<float>(insOutputs.Y_Estimate);
+            packet.insZ     = static_cast<float>(insOutputs.Z_Estimate);
             xSemaphoreGive(xSensorDataMutex);
         }
 
@@ -640,8 +640,6 @@ void loraTask(void *pvParameters) {
         if (xSemaphoreTake(xSpiMutex, portMAX_DELAY) == pdTRUE) {
             if (LoRa.beginPacket()) {
                 LoRa.write(reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
-                // MANDATORY: No 'true' argument here. This blocks until the radio
-                // has physically finished sending, preventing buffer stacking.
                 LoRa.endPacket();
             }
             xSemaphoreGive(xSpiMutex);
