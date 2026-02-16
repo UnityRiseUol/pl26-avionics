@@ -19,11 +19,12 @@
 #include <SparkFun_u-blox_GNSS_Arduino_Library.h>
 #include "FS.h"
 #include "SD_MMC.h"
-#include <stdio.h>
-#include <string.h>
+#include <cstdio>
+#include <cstring>
 #include <WiFi.h>
 #include <WebServer.h>
 #include <ArduinoJson.h>
+#include <INS_Model_C.h> // Library header
 
 // --- Definitions ---
 #define BMP_CS 18
@@ -94,7 +95,7 @@ struct AllSensorData {
 };
 
 // --- Telemetry Packet Structure (Compressed for LoRa) ---
-// Total Size: 32 bytes
+// Total Size: 44 bytes
 struct __attribute__((packed)) TelemetryPacket {
     float altitude;   // 4 bytes
     float vSpeed;    // 4 bytes
@@ -104,10 +105,17 @@ struct __attribute__((packed)) TelemetryPacket {
     float qI;         // 4 bytes
     float qJ;         // 4 bytes
     float qK;         // 4 bytes
+    float insX;       // 4 bytes
+    float insY;       // 4 bytes
+    float insZ;       // 4 bytes
 };
 
 // Global instances
 AllSensorData sensorData = {0};
+INS_Model_C insModel;
+INS_Model_C::ExtU_INS_Model_C_T insInputs;
+INS_Model_C::ExtY_INS_Model_C_T insOutputs;
+bool insRefInitialized = false;
 
 // --- RTOS Synchronization ---
 SemaphoreHandle_t xSensorDataMutex;
@@ -115,6 +123,7 @@ SemaphoreHandle_t xSpiMutex;
 
 // --- Task Function Prototypes ---
 void highFrequencySensorTask(void *pvParameters);
+void insTask(void *pvParameters);
 void gpsTask(void *pvParameters);
 void loggingTask(void *pvParameters);
 void buttonTask(void *pvParameters);
@@ -261,9 +270,16 @@ void setup() {
         while(file) {
             const char* fileName = file.name();
             if (strstr(fileName, "Flight_Data_") && strstr(fileName, ".csv")) {
-                int currentNum = 0;
-                if (sscanf(fileName, "/Flight_Data_%d.csv", &currentNum) == 1 || sscanf(fileName, "Flight_Data_%d.csv", &currentNum) == 1) {
-                    if (currentNum > maxLogNum) { maxLogNum = currentNum; }
+                const char* p = fileName;
+                if (p[0] == '/') p++;
+                if (strncmp(p, "Flight_Data_", 12) == 0) {
+                    char* end;
+                    long val = strtol(p + 12, &end, 10);
+                    if (end != p + 12 && strcmp(end, ".csv") == 0) {
+                        int currentNum = 0;
+                        currentNum = static_cast<int>(val);
+                        if (currentNum > maxLogNum) { maxLogNum = currentNum; }
+                    }
                 }
             }
             file.close();
@@ -282,7 +298,8 @@ void setup() {
                          "BNO_LinAccX,BNO_LinAccY,BNO_LinAccZ,"
                          "BNO_GravX,BNO_GravY,BNO_GravZ,"
                          "BNO_QuatR,BNO_QuatI,BNO_QuatJ,BNO_QuatK,"
-                         "GPS_Lat,GPS_Lon,GPS_Alt,GPS_Speed,GPS_Heading");
+                         "GPS_Lat,GPS_Lon,GPS_Alt,GPS_Speed,GPS_Heading,"
+                         "INS_X,INS_Y,INS_Z,INS_Lat,INS_Lon");
         dataFile.flush();
     }
 
@@ -312,14 +329,18 @@ void setup() {
 
     Serial.println("Sensors Initialised.");
 
-    // --- LoRa Setup (Optimized for Speed) ---
+    // Model Initialisation
+    insModel.initialize();
+    Serial.println("INS Model Initialised.");
+
+    // --- LoRa Setup ---
     LoRa.setSPI(SPI);
     LoRa.setPins(RFM95_CS, RFM95_RST, RFM95_INT);
     if (!LoRa.begin(BAND)) {
         Serial.println("LoRa Failed!");
     } else {
         LoRa.setTxPower(20);
-        LoRa.setSignalBandwidth(500E3); // 500kHz for speed
+        LoRa.setSignalBandwidth(500E3); // 500kHz
         LoRa.setSpreadingFactor(7);     // SF7
         LoRa.setCodingRate4(5);         // CR 4/5
         Serial.println("LoRa High Speed (500kHz) Ready.");
@@ -338,10 +359,11 @@ void setup() {
 
     // Tasks
     xTaskCreatePinnedToCore(highFrequencySensorTask, "SensTask", 4096, nullptr, 3, nullptr, 1);
+    xTaskCreatePinnedToCore(insTask,                 "INSTask",  8192, nullptr, 3, nullptr, 1);
     xTaskCreatePinnedToCore(gpsTask,                 "GPSTask",  4096, nullptr, 1, nullptr, 1);
     xTaskCreatePinnedToCore(loggingTask,             "LogTask",  4096, nullptr, 2, nullptr, 0);
     xTaskCreatePinnedToCore(buttonTask,              "BtnTask",  2048, nullptr, 2, nullptr, 0);
-    xTaskCreatePinnedToCore(webServerTask,           "WebTask",  4096, nullptr, 1, nullptr, 0);
+    xTaskCreatePinnedToCore(webServerTask,           "WebTask",  4096, nullptr, 2, nullptr, 0);
     xTaskCreatePinnedToCore(loraTask,                "LoRaTask", 4096, nullptr, 3, nullptr, 1); // Raised priority
 }
 
@@ -354,20 +376,20 @@ void highFrequencySensorTask(void *pvParameters) {
             if (xSemaphoreTake(xSpiMutex, portMAX_DELAY) == pdTRUE) {
                 // BMP Reading
                 if (bmp.performReading()) {
-                    sensorData.bmpTemperature = bmp.temperature;
-                    sensorData.bmpPressure = bmp.pressure / 100.0;
+                    sensorData.bmpTemperature = static_cast<float>(bmp.temperature);
+                    sensorData.bmpPressure = static_cast<float>(bmp.pressure / 100.0);
                     sensorData.bmpAltitude = bmp.readAltitude(config.seaLevelPressureHpa);
 
                     const unsigned long currentTime = millis();
                     if (lastVsTime > 0) {
-                        const float dt = (currentTime - lastVsTime) / 1000.0f;
+                        const float dt = static_cast<float>(currentTime - lastVsTime) / 1000.0f;
                         if (dt > 0) {
                             const float rawVs = (sensorData.bmpAltitude - lastAltitude) / dt;
                             altitudeSamples[sampleIndex] = rawVs;
                             sampleIndex = (sampleIndex + 1) % VERTICAL_SPEED_SAMPLES;
                             float totalVs = 0;
-                            for (int i = 0; i < VERTICAL_SPEED_SAMPLES; i++) {
-                                totalVs += altitudeSamples[i];
+                            for (float altitudeSample : altitudeSamples) {
+                                totalVs += altitudeSample;
                             }
                             sensorData.bmpVerticalSpeed = totalVs / VERTICAL_SPEED_SAMPLES;
                         }
@@ -378,11 +400,11 @@ void highFrequencySensorTask(void *pvParameters) {
 
                 // ICM Reading
                 if(icm.dataReady()) {
-                    constexpr float G_MPS2 = 9.80665;
+                    constexpr float G_MPS2 = 9.80665f;
                     icm.getAGMT();
-                    sensorData.icmAccX = (icm.accX() / 1000.0) * G_MPS2;
-                    sensorData.icmAccY = (icm.accY() / 1000.0) * G_MPS2;
-                    sensorData.icmAccZ = (icm.accZ() / 1000.0) * G_MPS2;
+                    sensorData.icmAccX = (icm.accX() / 1000.0f) * G_MPS2;
+                    sensorData.icmAccY = (icm.accY() / 1000.0f) * G_MPS2;
+                    sensorData.icmAccZ = (icm.accZ() / 1000.0f) * G_MPS2;
                     sensorData.icmGyrX = icm.gyrX();
                     sensorData.icmGyrY = icm.gyrY();
                     sensorData.icmGyrZ = icm.gyrZ();
@@ -415,9 +437,67 @@ void highFrequencySensorTask(void *pvParameters) {
                 }
                 xSemaphoreGive(xSpiMutex);
             }
+
             xSemaphoreGive(xSensorDataMutex);
         }
-        vTaskDelay(pdMS_TO_TICKS(2)); // Polling delay
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+void insTask(void *pvParameters) {
+    for (;;) {
+        if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
+            // --- INS Model Input Map ---
+            insInputs.GPS_LL[0] = sensorData.gpsLatitude;
+            insInputs.GPS_LL[1] = sensorData.gpsLongitude;
+            insInputs.BMP_Altitude = sensorData.bmpAltitude;
+
+            insInputs.BNO_Quaternion[0] = sensorData.bnoQuatR;
+            insInputs.BNO_Quaternion[1] = sensorData.bnoQuatI;
+            insInputs.BNO_Quaternion[2] = sensorData.bnoQuatJ;
+            insInputs.BNO_Quaternion[3] = sensorData.bnoQuatK;
+
+            insInputs.BNO_Lin_Accel[0] = sensorData.bnoLinearAccX;
+            insInputs.BNO_Lin_Accel[1] = sensorData.bnoLinearAccY;
+            insInputs.BNO_Lin_Accel[2] = sensorData.bnoLinearAccZ;
+
+            // --- REFERENCE CHECK ---
+            // Only lock the reference if GPS is valid, and it hasn't locked it yet
+            if (!insRefInitialized && sensorData.gpsValid) {
+                // Don't lock to (0,0) coordinates
+                if (abs(sensorData.gpsLatitude) > 0.001f) {
+                    insInputs.LL_ref[0] = sensorData.gpsLatitude;
+                    insInputs.LL_ref[1] = sensorData.gpsLongitude;
+                    insInputs.h_ref = sensorData.bmpAltitude;
+                    insRefInitialized = true;
+                    Serial.println("INS: Launch Reference Locked.");
+                }
+            }
+
+            // If not initialised, ensure we don't pass garbage data
+            if (!insRefInitialized) {
+                 insInputs.LL_ref[0] = 0.0;
+                 insInputs.LL_ref[1] = 0.0;
+                 insInputs.h_ref = 0.0;
+            }
+
+            // --- NaN Protection ---
+            // Calculate Magnitude of Quaternion: R^2 + I^2 + J^2 + K^2
+            const float quatNorm = (sensorData.bnoQuatR * sensorData.bnoQuatR) +
+                             (sensorData.bnoQuatI * sensorData.bnoQuatI) +
+                             (sensorData.bnoQuatJ * sensorData.bnoQuatJ) +
+                             (sensorData.bnoQuatK * sensorData.bnoQuatK);
+
+            // Only step the model if Reference is Locked and Quaternion is valid
+            if (insRefInitialized && quatNorm > 0.001f) {
+                insModel.setExternalInputs(&insInputs);
+                insModel.step();
+                insOutputs = insModel.getExternalOutputs();
+            }
+
+            xSemaphoreGive(xSensorDataMutex);
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -428,11 +508,11 @@ void gpsTask(void *pvParameters) {
                 const long rawLat = myGNSS.getLatitude();
                 const long rawLon = myGNSS.getLongitude();
                 if (rawLat != 0 || rawLon != 0) {
-                    sensorData.gpsLatitude = rawLat / 10000000.0f;
-                    sensorData.gpsLongitude = rawLon / 10000000.0f;
-                    sensorData.gpsAltitude = myGNSS.getAltitude() / 1000.0f;
-                    sensorData.gpsSpeed = myGNSS.getGroundSpeed() / 1000.0f;
-                    sensorData.gpsHeading = myGNSS.getHeading() / 100000.0f;
+                    sensorData.gpsLatitude = static_cast<float>(rawLat) / 10000000.0f;
+                    sensorData.gpsLongitude = static_cast<float>(rawLon) / 10000000.0f;
+                    sensorData.gpsAltitude = static_cast<float>(myGNSS.getAltitude()) / 1000.0f;
+                    sensorData.gpsSpeed = static_cast<float>(myGNSS.getGroundSpeed()) / 1000.0f;
+                    sensorData.gpsHeading = static_cast<float>(myGNSS.getHeading()) / 100000.0f;
                     sensorData.gpsValid = true;
                 }
                 xSemaphoreGive(xSensorDataMutex);
@@ -444,14 +524,18 @@ void gpsTask(void *pvParameters) {
 
 void loggingTask(void *pvParameters) {
     unsigned long lastFlush = 0;
-    for (;;) {
-        if (loggingEnabled) {
-            AllSensorData local;
-            if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
-                memcpy(&local, &sensorData, sizeof(AllSensorData));
-                xSemaphoreGive(xSensorDataMutex);
-            }
 
+    for (;;) {
+        AllSensorData local = {};
+        INS_Model_C::ExtY_INS_Model_C_T localIns = {};
+        
+        if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
+            memcpy(&local, &sensorData, sizeof(AllSensorData));
+            localIns = insOutputs;
+            xSemaphoreGive(xSensorDataMutex);
+        }
+
+        if (loggingEnabled) {
             if (dataFile) {
                 dataFile.print(millis());
                 dataFile.print(","); dataFile.print(local.bmpTemperature, 2);
@@ -481,7 +565,12 @@ void loggingTask(void *pvParameters) {
                 dataFile.print(","); dataFile.print(local.gpsLongitude, 6);
                 dataFile.print(","); dataFile.print(local.gpsAltitude, 2);
                 dataFile.print(","); dataFile.print(local.gpsSpeed, 2);
-                dataFile.print(","); dataFile.println(local.gpsHeading, 2);
+                dataFile.print(","); dataFile.print(local.gpsHeading, 2);
+                dataFile.print(","); dataFile.print(localIns.X_Estimate, 2);
+                dataFile.print(","); dataFile.print(localIns.Y_Estimate, 2);
+                dataFile.print(","); dataFile.print(localIns.Z_Estimate, 2);
+                dataFile.print(","); dataFile.print(localIns.Lat_Estimate, 7);
+                dataFile.println(localIns.Long_Estimate, 7);
             }
 
             if (millis() - lastFlush >= 1000) {
@@ -489,6 +578,7 @@ void loggingTask(void *pvParameters) {
                 if(dataFile) dataFile.flush();
             }
         }
+        
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
@@ -528,33 +618,42 @@ void webServerTask(void *pvParameters) {
 }
 
 void loraTask(void *pvParameters) {
-    vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for system stability
+    // Enable Hardware CRC to filter noise at the radio level
+    if (xSemaphoreTake(xSpiMutex, portMAX_DELAY) == pdTRUE) {
+        LoRa.enableCrc();
+        xSemaphoreGive(xSpiMutex);
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(2000));
 
     for (;;) {
-        TelemetryPacket packet;
+        TelemetryPacket packet{};
 
-        // 1. Gather Data (Quick Mutex Lock)
+        // 1. Thread-safe data copy
         if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
             packet.altitude = sensorData.bmpAltitude;
-            packet.vSpeed  = sensorData.bmpVerticalSpeed;
+            packet.vSpeed   = sensorData.bmpVerticalSpeed;
             packet.lat      = sensorData.gpsLatitude;
             packet.lon      = sensorData.gpsLongitude;
             packet.qR       = sensorData.bnoQuatR;
             packet.qI       = sensorData.bnoQuatI;
             packet.qJ       = sensorData.bnoQuatJ;
             packet.qK       = sensorData.bnoQuatK;
+            packet.insX     = static_cast<float>(insOutputs.X_Estimate);
+            packet.insY     = static_cast<float>(insOutputs.Y_Estimate);
+            packet.insZ     = static_cast<float>(insOutputs.Z_Estimate);
             xSemaphoreGive(xSensorDataMutex);
         }
 
-        // 2. Transmit Binary (SPI Mutex Lock)
+        // 2. Transmit Binary with synchronous blocking
         if (xSemaphoreTake(xSpiMutex, portMAX_DELAY) == pdTRUE) {
-            LoRa.beginPacket();
-            LoRa.write(reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
-            LoRa.endPacket(true);
+            if (LoRa.beginPacket()) {
+                LoRa.write(reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
+                LoRa.endPacket();
+            }
             xSemaphoreGive(xSpiMutex);
         }
 
-        // 3. Timing Control for 50Hz
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
