@@ -329,18 +329,18 @@ void setup() {
 
     Serial.println("Sensors Initialised.");
 
-    // Model Initialization
+    // Model Initialisation
     insModel.initialize();
     Serial.println("INS Model Initialised.");
 
-    // --- LoRa Setup (Optimized for Speed) ---
+    // --- LoRa Setup ---
     LoRa.setSPI(SPI);
     LoRa.setPins(RFM95_CS, RFM95_RST, RFM95_INT);
     if (!LoRa.begin(BAND)) {
         Serial.println("LoRa Failed!");
     } else {
         LoRa.setTxPower(20);
-        LoRa.setSignalBandwidth(500E3); // 500kHz for speed
+        LoRa.setSignalBandwidth(500E3); // 500kHz
         LoRa.setSpreadingFactor(7);     // SF7
         LoRa.setCodingRate4(5);         // CR 4/5
         Serial.println("LoRa High Speed (500kHz) Ready.");
@@ -654,8 +654,6 @@ void loraTask(void *pvParameters) {
             xSemaphoreGive(xSpiMutex);
         }
 
-        // 50Hz (20ms) is the limit. If you see 255 errors again,
-        // change this to 25ms (40Hz) for increased stability.
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
