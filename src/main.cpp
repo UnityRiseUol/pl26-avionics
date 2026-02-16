@@ -123,6 +123,7 @@ SemaphoreHandle_t xSpiMutex;
 
 // --- Task Function Prototypes ---
 void highFrequencySensorTask(void *pvParameters);
+void insTask(void *pvParameters);
 void gpsTask(void *pvParameters);
 void loggingTask(void *pvParameters);
 void buttonTask(void *pvParameters);
@@ -358,6 +359,7 @@ void setup() {
 
     // Tasks
     xTaskCreatePinnedToCore(highFrequencySensorTask, "SensTask", 4096, nullptr, 3, nullptr, 1);
+    xTaskCreatePinnedToCore(insTask,                 "INSTask",  8192, nullptr, 3, nullptr, 1);
     xTaskCreatePinnedToCore(gpsTask,                 "GPSTask",  4096, nullptr, 1, nullptr, 1);
     xTaskCreatePinnedToCore(loggingTask,             "LogTask",  4096, nullptr, 2, nullptr, 0);
     xTaskCreatePinnedToCore(buttonTask,              "BtnTask",  2048, nullptr, 2, nullptr, 0);
@@ -436,6 +438,15 @@ void highFrequencySensorTask(void *pvParameters) {
                 xSemaphoreGive(xSpiMutex);
             }
 
+            xSemaphoreGive(xSensorDataMutex);
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+void insTask(void *pvParameters) {
+    for (;;) {
+        if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
             // --- INS Model Input Map ---
             insInputs.GPS_LL[0] = sensorData.gpsLatitude;
             insInputs.GPS_LL[1] = sensorData.gpsLongitude;
@@ -482,8 +493,6 @@ void highFrequencySensorTask(void *pvParameters) {
                 insModel.setExternalInputs(&insInputs);
                 insModel.step();
                 insOutputs = insModel.getExternalOutputs();
-            } else {
-                // If waiting, ensure outputs are zeroed or safe
             }
 
             xSemaphoreGive(xSensorDataMutex);
