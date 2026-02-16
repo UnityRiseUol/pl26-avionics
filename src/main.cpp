@@ -361,7 +361,7 @@ void setup() {
     xTaskCreatePinnedToCore(gpsTask,                 "GPSTask",  4096, nullptr, 1, nullptr, 1);
     xTaskCreatePinnedToCore(loggingTask,             "LogTask",  4096, nullptr, 2, nullptr, 0);
     xTaskCreatePinnedToCore(buttonTask,              "BtnTask",  2048, nullptr, 2, nullptr, 0);
-    xTaskCreatePinnedToCore(webServerTask,           "WebTask",  4096, nullptr, 1, nullptr, 0);
+    xTaskCreatePinnedToCore(webServerTask,           "WebTask",  4096, nullptr, 2, nullptr, 0);
     xTaskCreatePinnedToCore(loraTask,                "LoRaTask", 4096, nullptr, 3, nullptr, 1); // Raised priority
 }
 
