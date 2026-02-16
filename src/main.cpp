@@ -95,7 +95,7 @@ struct AllSensorData {
 };
 
 // --- Telemetry Packet Structure (Compressed for LoRa) ---
-// Total Size: 32 bytes
+// Total Size: 44 bytes
 struct __attribute__((packed)) TelemetryPacket {
     float altitude;   // 4 bytes
     float vSpeed;    // 4 bytes
@@ -105,6 +105,9 @@ struct __attribute__((packed)) TelemetryPacket {
     float qI;         // 4 bytes
     float qJ;         // 4 bytes
     float qK;         // 4 bytes
+    float insX;       // 4 bytes
+    float insY;       // 4 bytes
+    float insZ;       // 4 bytes
 };
 
 // Global instances
@@ -606,33 +609,46 @@ void webServerTask(void *pvParameters) {
 }
 
 void loraTask(void *pvParameters) {
-    vTaskDelay(pdMS_TO_TICKS(2000)); // Wait for system stability
+    // Enable Hardware CRC to filter noise at the radio level
+    if (xSemaphoreTake(xSpiMutex, portMAX_DELAY) == pdTRUE) {
+        LoRa.enableCrc();
+        xSemaphoreGive(xSpiMutex);
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(2000));
 
     for (;;) {
-        TelemetryPacket packet{};
+        TelemetryPacket packet;
 
-        // 1. Gather Data (Quick Mutex Lock)
+        // 1. Thread-safe data copy
         if (xSemaphoreTake(xSensorDataMutex, portMAX_DELAY) == pdTRUE) {
             packet.altitude = sensorData.bmpAltitude;
-            packet.vSpeed  = sensorData.bmpVerticalSpeed;
+            packet.vSpeed   = sensorData.bmpVerticalSpeed;
             packet.lat      = sensorData.gpsLatitude;
             packet.lon      = sensorData.gpsLongitude;
             packet.qR       = sensorData.bnoQuatR;
             packet.qI       = sensorData.bnoQuatI;
             packet.qJ       = sensorData.bnoQuatJ;
             packet.qK       = sensorData.bnoQuatK;
+            packet.insX     = insOutputs.X_Estimate;
+            packet.insY     = insOutputs.Y_Estimate;
+            packet.insZ     = insOutputs.Z_Estimate;
             xSemaphoreGive(xSensorDataMutex);
         }
 
-        // 2. Transmit Binary (SPI Mutex Lock)
+        // 2. Transmit Binary with synchronous blocking
         if (xSemaphoreTake(xSpiMutex, portMAX_DELAY) == pdTRUE) {
-            LoRa.beginPacket();
-            LoRa.write(reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
-            LoRa.endPacket(true);
+            if (LoRa.beginPacket()) {
+                LoRa.write(reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
+                // MANDATORY: No 'true' argument here. This blocks until the radio
+                // has physically finished sending, preventing buffer stacking.
+                LoRa.endPacket();
+            }
             xSemaphoreGive(xSpiMutex);
         }
 
-        // 3. Timing Control for 50Hz
+        // 50Hz (20ms) is the limit. If you see 255 errors again,
+        // change this to 25ms (40Hz) for increased stability.
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
