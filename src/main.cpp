@@ -294,7 +294,8 @@ void setup() {
                          "BNO_LinAccX,BNO_LinAccY,BNO_LinAccZ,"
                          "BNO_GravX,BNO_GravY,BNO_GravZ,"
                          "BNO_QuatR,BNO_QuatI,BNO_QuatJ,BNO_QuatK,"
-                         "GPS_Lat,GPS_Lon,GPS_Alt,GPS_Speed,GPS_Heading");
+                         "GPS_Lat,GPS_Lon,GPS_Alt,GPS_Speed,GPS_Heading,"
+                         "INS_X,INS_Y,INS_Z,INS_Lat,INS_Lon");
         dataFile.flush();
     }
 
@@ -511,7 +512,7 @@ void gpsTask(void *pvParameters) {
 
 void loggingTask(void *pvParameters) {
     unsigned long lastFlush = 0;
-    unsigned long lastPrint = 0;
+
     for (;;) {
         AllSensorData local = {};
         INS_Model_C::ExtY_INS_Model_C_T localIns = {};
@@ -552,20 +553,18 @@ void loggingTask(void *pvParameters) {
                 dataFile.print(","); dataFile.print(local.gpsLongitude, 6);
                 dataFile.print(","); dataFile.print(local.gpsAltitude, 2);
                 dataFile.print(","); dataFile.print(local.gpsSpeed, 2);
-                dataFile.println(local.gpsHeading, 2);
+                dataFile.print(","); dataFile.print(local.gpsHeading, 2);
+                dataFile.print(","); dataFile.print(localIns.X_Estimate, 2);
+                dataFile.print(","); dataFile.print(localIns.Y_Estimate, 2);
+                dataFile.print(","); dataFile.print(localIns.Z_Estimate, 2);
+                dataFile.print(","); dataFile.print(localIns.Lat_Estimate, 7);
+                dataFile.println(localIns.Long_Estimate, 7);
             }
 
             if (millis() - lastFlush >= 1000) {
                 lastFlush = millis();
                 if(dataFile) dataFile.flush();
             }
-        }
-        
-        if (millis() - lastPrint >= 100) {
-            lastPrint = millis();
-            Serial.printf("INS: X=%.2f Y=%.2f Z=%.2f Lat=%.6f Lon=%.6f\n", 
-                localIns.X_Estimate, localIns.Y_Estimate, localIns.Z_Estimate, 
-                localIns.Lat_Estimate, localIns.Long_Estimate);
         }
         
         vTaskDelay(pdMS_TO_TICKS(10));
