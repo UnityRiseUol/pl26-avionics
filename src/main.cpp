@@ -14,7 +14,7 @@
 #include <LoRa.h>
 #include <Adafruit_Sensor.h>
 #include "Adafruit_BMP3XX.h"
-#include "ICM_20948.h"
+// #include "ICM_20948.h"
 #include "Adafruit_BNO08x.h"
 #include <SparkFun_u-blox_GNSS_Arduino_Library.h>
 #include "FS.h"
@@ -28,7 +28,7 @@
 
 // --- Definitions ---
 #define BMP_CS 18
-#define ICM_CS 2
+// #define ICM_CS 2
 #define BNO08X_CS 4
 #define BNO08X_INT 17
 #define BNO08X_RESET 1
@@ -46,7 +46,7 @@ WebServer server(80);
 
 // --- Sensor Objects ---
 Adafruit_BMP3XX bmp;
-ICM_20948_SPI icm;
+// ICM_20948_SPI icm;
 Adafruit_BNO08x bno08x(BNO08X_RESET);
 sh2_SensorValue_t bnoSensorValue;
 SFE_UBLOX_GNSS myGNSS;
@@ -83,9 +83,9 @@ SystemConfig config = {1013.25};
 // --- Shared Data Structure (Full Resolution for SD Card) ---
 struct AllSensorData {
     float bmpTemperature, bmpPressure, bmpAltitude, bmpVerticalSpeed;
-    float icmAccX, icmAccY, icmAccZ;
-    float icmGyrX, icmGyrY, icmGyrZ;
-    float icmMagX, icmMagY, icmMagZ;
+    // float icmAccX, icmAccY, icmAccZ;
+    // float icmGyrX, icmGyrY, icmGyrZ;
+    // float icmMagX, icmMagY, icmMagZ;
     float bnoLinearAccX, bnoLinearAccY, bnoLinearAccZ;
     float bnoGravityX, bnoGravityY, bnoGravityZ;
     float bnoQuatR, bnoQuatI, bnoQuatJ, bnoQuatK;
@@ -293,8 +293,8 @@ void setup() {
     dataFile = SD_MMC.open(logFileName, FILE_WRITE);
     if (dataFile) {
         dataFile.println("Time(ms),Temp(C),Pressure(hPa),Altitude(m),V_Speed(m/s),"
-                         "ICM_AccX,ICM_AccY,ICM_AccZ,ICM_GyrX,ICM_GyrY,ICM_GyrZ,"
-                         "ICM_MagX,ICM_MagY,ICM_MagZ,"
+                         // "ICM_AccX,ICM_AccY,ICM_AccZ,ICM_GyrX,ICM_GyrY,ICM_GyrZ,"
+                         // "ICM_MagX,ICM_MagY,ICM_MagZ,"
                          "BNO_LinAccX,BNO_LinAccY,BNO_LinAccZ,"
                          "BNO_GravX,BNO_GravY,BNO_GravZ,"
                          "BNO_QuatR,BNO_QuatI,BNO_QuatJ,BNO_QuatK,"
@@ -312,8 +312,8 @@ void setup() {
     SPI.begin();
 
     if (!bmp.begin_SPI(BMP_CS)) { Serial.println("BMP Init Failed"); while (true); }
-    icm.begin(ICM_CS, SPI);
-    if (icm.status != ICM_20948_Stat_Ok) { Serial.println("ICM Init Failed"); while (true); }
+    // icm.begin(ICM_CS, SPI);
+    // if (icm.status != ICM_20948_Stat_Ok) { Serial.println("ICM Init Failed"); while (true); }
     if (!bno08x.begin_SPI(BNO08X_CS, BNO08X_INT)) { Serial.println("BNO Init Failed"); while (true); }
     if (!myGNSS.begin()) { Serial.println("GNSS Init Failed"); while (true); }
 
@@ -399,6 +399,7 @@ void highFrequencySensorTask(void *pvParameters) {
                 }
 
                 // ICM Reading
+                /*
                 if(icm.dataReady()) {
                     constexpr float G_MPS2 = 9.80665f;
                     icm.getAGMT();
@@ -412,6 +413,7 @@ void highFrequencySensorTask(void *pvParameters) {
                     sensorData.icmMagY = icm.magY();
                     sensorData.icmMagZ = icm.magZ();
                 }
+                */
 
                 // BNO Reading
                 if (bno08x.getSensorEvent(&bnoSensorValue)) {
@@ -542,6 +544,7 @@ void loggingTask(void *pvParameters) {
                 dataFile.print(","); dataFile.print(local.bmpPressure, 2);
                 dataFile.print(","); dataFile.print(local.bmpAltitude, 2);
                 dataFile.print(","); dataFile.print(local.bmpVerticalSpeed, 2);
+                /*
                 dataFile.print(","); dataFile.print(local.icmAccX, 3);
                 dataFile.print(","); dataFile.print(local.icmAccY, 3);
                 dataFile.print(","); dataFile.print(local.icmAccZ, 3);
@@ -551,6 +554,7 @@ void loggingTask(void *pvParameters) {
                 dataFile.print(","); dataFile.print(local.icmMagX, 1);
                 dataFile.print(","); dataFile.print(local.icmMagY, 1);
                 dataFile.print(","); dataFile.print(local.icmMagZ, 1);
+                */
                 dataFile.print(","); dataFile.print(local.bnoLinearAccX, 3);
                 dataFile.print(","); dataFile.print(local.bnoLinearAccY, 3);
                 dataFile.print(","); dataFile.print(local.bnoLinearAccZ, 3);
